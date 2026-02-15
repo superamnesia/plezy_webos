@@ -72,6 +72,7 @@ class PlayerWeb with PlayerStreamControllersMixin implements Player {
       ((web.Event e) {
         _state = _state.copyWith(playing: true);
         playingController.add(true);
+        _startPositionTimer();
       }).toJS,
     );
 
@@ -80,6 +81,7 @@ class PlayerWeb with PlayerStreamControllersMixin implements Player {
       ((web.Event e) {
         _state = _state.copyWith(playing: false);
         playingController.add(false);
+        _stopPositionTimer();
       }).toJS,
     );
 
@@ -150,7 +152,9 @@ class PlayerWeb with PlayerStreamControllersMixin implements Player {
       'error',
       ((web.Event e) {
         final error = video.error;
-        final message = error != null ? 'Video error: code ${error.code}' : 'Unknown video error';
+        final message = error != null
+            ? 'Video error: ${_errorCodeToString(error.code)}'
+            : 'Unknown video error';
         errorController.add(message);
       }).toJS,
     );
@@ -194,13 +198,28 @@ class PlayerWeb with PlayerStreamControllersMixin implements Player {
     final video = _videoElement;
     if (video == null) return;
 
-    final buffered = video.buffered;
-    if (buffered.length > 0) {
-      final end = buffered.end(buffered.length - 1);
-      final buffer = Duration(milliseconds: (end * 1000).toInt());
-      _state = _state.copyWith(buffer: buffer);
-      bufferController.add(buffer);
+    try {
+      final buffered = video.buffered;
+      if (buffered.length > 0) {
+        final end = buffered.end(buffered.length - 1);
+        final buffer = Duration(milliseconds: (end * 1000).toInt());
+        _state = _state.copyWith(buffer: buffer);
+        bufferController.add(buffer);
+      }
+    } catch (_) {
+      // TimeRanges may throw on some browsers if not ready
     }
+  }
+
+  /// Converts HTML5 MediaError code to a human-readable string.
+  static String _errorCodeToString(int code) {
+    return switch (code) {
+      1 => 'Playback aborted (MEDIA_ERR_ABORTED)',
+      2 => 'Network error (MEDIA_ERR_NETWORK)',
+      3 => 'Decode error (MEDIA_ERR_DECODE)',
+      4 => 'Source not supported (MEDIA_ERR_SRC_NOT_SUPPORTED)',
+      _ => 'Unknown error (code $code)',
+    };
   }
 
   void _parseTracksFromVideo() {
@@ -247,15 +266,25 @@ class PlayerWeb with PlayerStreamControllersMixin implements Player {
     _state = _state.copyWith(completed: false, position: Duration.zero);
     completedController.add(false);
 
-    // Set headers via fetch if needed (for Plex token auth)
-    video.src = media.uri;
+    // For Plex authentication: append token to URL if headers are provided.
+    // Browsers don't support custom headers on <video> src requests,
+    // so we pass the Plex token as a query parameter.
+    var uri = media.uri;
+    if (media.headers != null && media.headers!.isNotEmpty) {
+      final plexToken = media.headers!['X-Plex-Token'];
+      if (plexToken != null) {
+        final separator = uri.contains('?') ? '&' : '?';
+        uri = '$uri${separator}X-Plex-Token=$plexToken';
+      }
+    }
+
+    video.src = uri;
 
     if (media.start != null) {
       video.currentTime = media.start!.inMilliseconds / 1000.0;
     }
 
     video.load();
-    _startPositionTimer();
 
     if (play) {
       await this.play();
@@ -266,8 +295,8 @@ class PlayerWeb with PlayerStreamControllersMixin implements Player {
   Future<void> play() async {
     if (_disposed || _videoElement == null) return;
     try {
-      _videoElement!.play();
-      _startPositionTimer();
+      // video.play() returns a JS Promise - use .toDart to await it properly
+      await _videoElement!.play().toDart;
     } catch (e) {
       errorController.add('Play failed: $e');
     }

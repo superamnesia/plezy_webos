@@ -37,6 +37,8 @@ class RemotePeerError {
 /// Hosting sessions (HttpServer) is not available in browsers.
 class CompanionRemotePeerService {
   WebSocketChannel? _channel;
+  StreamSubscription? _streamSubscription;
+  bool _connected = false;
 
   String? _sessionId;
   String? _pin;
@@ -64,14 +66,14 @@ class CompanionRemotePeerService {
   String? get hostAddress => _hostAddress;
   RemoteSessionRole? get role => _role;
   bool get isHost => _role == RemoteSessionRole.host;
-  bool get isConnected => _channel != null && _channel?.closeCode == null;
+  bool get isConnected => _connected && _channel != null;
 
   /// Hosting is not supported on web.
-  Future<({String sessionId, String pin, String address})> createSession(String deviceName, String platform) async {
-    throw const RemotePeerError(
+  Future<({String sessionId, String pin, String address})> createSession(String deviceName, String platform) {
+    return Future.error(const RemotePeerError(
       type: RemotePeerErrorType.serverError,
       message: 'Hosting sessions is not supported on web platforms',
-    );
+    ));
   }
 
   Future<void> joinSession(String sessionId, String pin, String deviceName, String platform, String hostAddress) async {
@@ -88,7 +90,10 @@ class CompanionRemotePeerService {
     final completer = Completer<void>();
 
     try {
-      final url = 'ws://$hostAddress/ws';
+      // Use wss:// for https hosts, ws:// otherwise
+      final scheme = hostAddress.startsWith('https') ? 'wss' : 'ws';
+      final cleanHost = hostAddress.replaceFirst(RegExp(r'^https?://'), '');
+      final url = '$scheme://$cleanHost/ws';
       appLogger.d('CompanionRemote: Connecting to $url');
 
       _connectionStateController.add(RemoteSessionStatus.connecting);
@@ -104,13 +109,14 @@ class CompanionRemotePeerService {
       });
       _channel!.sink.add(authMessage);
 
-      _channel!.stream.listen(
+      _streamSubscription = _channel!.stream.listen(
         (data) {
           try {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
             final messageType = json['type'] as String?;
 
             if (messageType == 'authSuccess') {
+              _connected = true;
               if (!completer.isCompleted) completer.complete();
               final device = RemoteDevice(id: 'host', name: 'Desktop', platform: 'desktop');
               _deviceConnectedController.add(device);
@@ -134,12 +140,26 @@ class CompanionRemotePeerService {
           }
         },
         onDone: () {
+          _connected = false;
           _deviceDisconnectedController.add(null);
           _connectionStateController.add(RemoteSessionStatus.disconnected);
           _stopPingTimer();
+          if (!completer.isCompleted) {
+            completer.completeError(const RemotePeerError(
+              type: RemotePeerErrorType.connectionFailed,
+              message: 'Connection closed before authentication completed',
+            ));
+          }
         },
         onError: (error) {
-          if (!completer.isCompleted) completer.completeError(error);
+          _connected = false;
+          if (!completer.isCompleted) {
+            completer.completeError(RemotePeerError(
+              type: RemotePeerErrorType.connectionFailed,
+              message: 'Connection error: $error',
+              originalError: error,
+            ));
+          }
           _errorController.add(RemotePeerError(
             type: RemotePeerErrorType.connectionFailed,
             message: 'Connection error: $error',
@@ -149,7 +169,13 @@ class CompanionRemotePeerService {
         },
       );
     } catch (e) {
-      if (!completer.isCompleted) completer.completeError(e);
+      if (!completer.isCompleted) {
+        completer.completeError(RemotePeerError(
+          type: RemotePeerErrorType.connectionFailed,
+          message: 'Failed to connect: $e',
+          originalError: e,
+        ));
+      }
       _errorController.add(RemotePeerError(
         type: RemotePeerErrorType.connectionFailed,
         message: 'Failed to connect: $e',
@@ -160,10 +186,14 @@ class CompanionRemotePeerService {
     return completer.future.timeout(
       const Duration(seconds: 15),
       onTimeout: () async {
+        _connected = false;
+        await _streamSubscription?.cancel();
+        _streamSubscription = null;
         if (_channel != null) {
           await _channel!.sink.close();
           _channel = null;
         }
+        _stopPingTimer();
         throw const RemotePeerError(type: RemotePeerErrorType.timeout, message: 'Timed out joining session');
       },
     );
@@ -193,11 +223,10 @@ class CompanionRemotePeerService {
   }
 
   void sendCommand(RemoteCommand command) {
+    if (!isConnected) return;
     try {
       final json = jsonEncode(command.toJson());
-      if (_channel != null) {
-        _channel!.sink.add(json);
-      }
+      _channel!.sink.add(json);
     } catch (e) {
       _errorController.add(RemotePeerError(
         type: RemotePeerErrorType.dataChannelError,
@@ -208,7 +237,10 @@ class CompanionRemotePeerService {
   }
 
   Future<void> disconnect() async {
+    _connected = false;
     _stopPingTimer();
+    await _streamSubscription?.cancel();
+    _streamSubscription = null;
     if (_channel != null) {
       await _channel!.sink.close();
       _channel = null;

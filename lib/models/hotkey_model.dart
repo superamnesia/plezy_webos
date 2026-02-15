@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import '../utils/platform_helper.dart';
+
 /// Modifier keys that can be combined with a primary key to form a hotkey.
 ///
 /// Each value holds the physical keys that correspond to it (e.g. shift maps
@@ -27,7 +29,7 @@ class HotKey {
 }
 
 /// Whether to use macOS keyboard symbols.
-final bool _isMacOS = Platform.isMacOS;
+final bool _isMacOS = AppPlatform.isMacOS;
 
 /// Human-readable label for a [PhysicalKeyboardKey].
 ///
