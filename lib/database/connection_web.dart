@@ -11,6 +11,13 @@ QueryExecutor openDatabaseConnection() {
       sqlite3Uri: Uri.parse('sqlite3.wasm'),
       driftWorkerUri: Uri.parse('drift_worker.dart.js'),
     );
+
+    if (result.missingFeatures.isNotEmpty) {
+      // Log missing features but continue - basic functionality still works
+      // ignore: avoid_print
+      print('Drift WASM missing features: ${result.missingFeatures}');
+    }
+
     return result.resolvedExecutor;
   });
 }

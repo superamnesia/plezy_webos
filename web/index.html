@@ -7,7 +7,8 @@
   <meta name="description" content="Plezy - A beautiful Plex client">
 
   <!-- webOS TV specific meta tags -->
-  <meta name="viewport" content="width=1920, initial-scale=1.0, user-scalable=no">
+  <!-- Use device-width to support both 1080p and 4K TVs -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 
   <!-- iOS meta tags & icons -->
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -63,6 +64,13 @@
       opacity: 0.8;
     }
 
+    .loading .error {
+      color: #ff6b6b;
+      font-size: 14px;
+      margin-top: 8px;
+      display: none;
+    }
+
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
@@ -70,20 +78,24 @@
 </head>
 <body>
   <div class="loading" id="loading">
-    <div class="spinner"></div>
-    <p>Loading Plezy...</p>
+    <div class="spinner" id="spinner"></div>
+    <p id="loading-text">Loading Plezy...</p>
+    <p class="error" id="loading-error"></p>
   </div>
 
   <script>
     // webOS system detection and integration
     window.isWebOS = false;
     window.webOSVersion = null;
+    window.webOSDeviceInfo = null;
 
     if (window.webOSSystem || window.PalmSystem || window.webOS) {
       window.isWebOS = true;
       try {
         if (window.webOSSystem) {
-          window.webOSVersion = JSON.parse(window.webOSSystem.deviceInfo || '{}').sdkVersion || null;
+          var info = JSON.parse(window.webOSSystem.deviceInfo || '{}');
+          window.webOSVersion = info.sdkVersion || null;
+          window.webOSDeviceInfo = info;
         }
       } catch (e) {
         console.log('Could not detect webOS version:', e);
@@ -91,25 +103,45 @@
       console.log('Running on webOS TV, version:', window.webOSVersion);
     }
 
-    // webOS back key handling
+    // webOS back key and remote key handling
     document.addEventListener('keydown', function(e) {
-      // webOS back key (keyCode 461)
-      if (e.keyCode === 461) {
-        // Let Flutter handle it as Escape
-        e.preventDefault();
-      }
-    });
-
-    // Prevent webOS from handling certain keys
-    document.addEventListener('keydown', function(e) {
-      // Color buttons on webOS remote
-      var webOSKeys = [403, 404, 405, 406, 412, 413, 415, 417, 461];
+      // webOS remote keys that Flutter should handle
+      var webOSKeys = [
+        403, 404, 405, 406, // Color buttons (Red, Green, Yellow, Blue)
+        412, 413, 415, 417,  // Media keys (Rewind, Stop, Play, FastForward)
+        461                  // Back key
+      ];
       if (webOSKeys.indexOf(e.keyCode) !== -1) {
         e.preventDefault();
       }
     });
+
+    // Loading timeout - show error message after 30 seconds
+    var _loadingTimeout = setTimeout(function() {
+      var errorEl = document.getElementById('loading-error');
+      var textEl = document.getElementById('loading-text');
+      if (errorEl && textEl) {
+        textEl.textContent = 'Loading is taking longer than expected...';
+        errorEl.textContent = 'If the app doesn\'t load, try restarting.';
+        errorEl.style.display = 'block';
+      }
+    }, 30000);
+
+    // Clear loading indicator when Flutter is ready
+    window.addEventListener('flutter-first-frame', function() {
+      clearTimeout(_loadingTimeout);
+      var loading = document.getElementById('loading');
+      if (loading) {
+        loading.style.display = 'none';
+      }
+    });
   </script>
 
-  <script src="flutter_bootstrap.js" async></script>
+  <script src="flutter_bootstrap.js" async
+    onerror="document.getElementById('loading-text').textContent='Failed to load application.';
+             document.getElementById('loading-error').textContent='Check your network connection and try again.';
+             document.getElementById('loading-error').style.display='block';
+             document.getElementById('spinner').style.display='none';">
+  </script>
 </body>
 </html>
